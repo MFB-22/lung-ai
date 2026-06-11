@@ -1,66 +1,52 @@
-# 🫁 Lung-Ai Pro: SOTA CXR Bone Suppression System
+# 🫁 Lung-Ai Pro: 흉부 X-ray 뼈 억제 및 통합 진단 보조 시스템
 
-> **AI 기반 흉부 X-ray(CXR) 폐 영역 분할 및 뼈 음영 억제 전처리 플랫폼** > 흉부 X-ray 판독 시 갈비뼈 및 쇄골 음영이 폐 내부 병변을 가리는 문제를 해결하기 위해, 듀얼 AI 네트워크를 활용하여 뼈 음영을 깔끔하게 억제하고 병변 가시성을 극대화하는 고속 전처리 시스템입니다.
+![Python](https://img.shields.io/badge/Python-3.8%2B-blue)
+![PyTorch](https://img.shields.io/badge/PyTorch-EE4C2C?style=flat&logo=pytorch&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat&logo=fastapi&logoColor=white)
+![React](https://img.shields.io/badge/React-20232A?style=flat&logo=react&logoColor=61DAFB)
 
-<br/>
+**Lung-Ai Pro**는 흉부 X-ray(CXR) 판독 시 갈비뼈와 쇄골 등 복잡한 뼈 구조물에 가려져 미세 병변(결절, 결핵 등)을 놓치는 문제를 해결하기 위해 개발된 **딥러닝 기반 뼈 억제(Bone Suppression) 전처리 및 질병 분류 파이프라인**입니다. 
 
-## 🌟 Key Features
-- **🏥 의료 데이터(DICOM) 완벽 지원:** 일반 이미지(PNG/JPG)는 물론, 브라우저가 해독하지 못하는 `.dcm` 파일을 FastAPI 백엔드가 0.1초 만에 썸네일로 구워 프론트엔드로 실시간 스트리밍합니다.
-- **📂 폴더 단위 일괄 업로드:** 수백 장의 환자 데이터를 한 번에 업로드하고 전처리 대기열을 관리할 수 있는 직관적인 React 대시보드를 제공합니다.
-- **⚡ 듀얼 AI 파이프라인 (Dual-Stream):** `PSPNet`을 활용한 해부학적 폐 영역 분할과 자체 가중치(`lumora_bone_model.pth`)를 장착한 `Lightweight U-Net` 기반의 뼈 음영 억제 추론이 동시에 이루어집니다.
-- **🎨 자연스러운 이미지 블렌딩:** 가우시안 블러 기반의 알파 채널 합성과 통계적 휘도 분포 일치화(`match_mean_std`) 로직을 통해 이질감 없는 고품질 전처리 결과를 보장합니다.
+글로벌 오픈소스(ResNet_BS)를 타겟 데이터에 맞춰 512x512 고해상도로 파인튜닝(Fine-Tuning)하였으며, 독자적인 CLAHE 후처리와 100% 알파 블렌딩 기술을 적용하여 진단의 민감도(Recall)를 극대화했습니다.
 
-<br/>
+---
 
-## 🛠 Tech Stack
-- **Frontend:** React.js, Vite, Tailwind CSS
-- **Backend:** Python, FastAPI, Uvicorn
-- **AI & Vision:** PyTorch, TorchXRayVision, OpenCV (cv2)
+## ✨ 핵심 기능 (Key Features)
 
-<br/>
+* **🚀 512x512 Native 뼈 억제 추론 (Fine-tuned ResNet_BS):** * 이미지 축소(Downsampling) 없이 512x512 고해상도 원본을 그대로 처리하여 미세 병변의 픽셀 손실을 방지합니다. (JSRT & BSE-JSRT 데이터셋 기반 Transfer Learning 적용)
+* **🧠 정밀한 폐 분할 및 100% 알파 블렌딩:** * `PSPNet`을 활용해 폐 영역(ROI)만 정확히 추출한 뒤, 뼈가 억제된 결과물을 폐 내부 영역에만 **100% 가중치**로 부드럽게 합성하여 OOD(Out-of-Distribution) 에러를 방지합니다.
+* **💡 CLAHE 명암비 최적화:** * 뼈 억제 이후 흐려지는 연조직(Soft Tissue)의 명암비를 국소적으로 끌어올려 질병 분류 모델(`DenseNet121`)의 탐지력을 향상시킵니다.
+* **📊 듀얼 스트림(Dual-Stream) A/B 테스트 검증:** * '원본 단독 판독' vs 'Lung-Ai 전처리 통합 판독' 성능을 실시간으로 비교하고, 그 결과를 엑셀(Excel) 리포트로 자동 추출합니다.
+* **🌐 MLOps 통합 웹 서비스:** * React(Frontend)와 FastAPI(Backend) 기반으로 DICOM 파일 디코딩 및 실시간 전처리 듀얼 뷰어 렌더링을 지원합니다.
 
-## ⚙️ AI Core Processing Pipeline
-본 시스템의 전처리 버튼을 클릭하는 순간, 백엔드 서버에서 아래의 5단계 파이프라인이 즉각적으로 구동됩니다.
+---
 
-1. **Image Decoding & Normalization:** DICOM 메타데이터 파싱 및 0~255 범위 8비트 정규화
-2. **Tensor Transformation:** 모델 입력 규격에 맞춘 512x512 해상도 및 PyTorch 텐서 변환
-3. **Lung Segmentation:** `PSPNet` 모델 구동을 통한 좌/우 폐 영역 마스킹 및 `cv2.findContours`를 통한 윤곽선 정제
-4. **Bone Suppression:** 마스킹된 폐 영역 내부의 뼈 패턴을 `Lightweight U-Net` 모델로 추론 및 억제
-5. **Alpha Blending & Match Mean/Std:** 뼈가 제거된 결과와 원본 간의 가우시안 소프트 블렌딩 및 휘도 보정 수행, GPU 가비지 컬렉션(RAM 정리) 후 PNG 스트리밍
-
-<br/>
-
-## 📊 System Architecture
+## 🏗️ 시스템 아키텍처 (System Architecture)
 
 ```mermaid
 graph TD
-    %% 스타일 정의
-    style InOut fill:#FFF3E6,stroke:#F5A623,stroke-width:2px;
-    style Router fill:#E6F2FF,stroke:#4A90E2,stroke-width:2px;
-    style CoreFunc fill:#ECECF0,stroke:#A0A0A0,stroke-width:2px;
-    style AI fill:#E6FFE6,stroke:#22C55E,stroke-width:2px;
+    classDef startEnd fill:#f9f9f9,stroke:#333,stroke-width:2px;
+    classDef router fill:#e6f2ff,stroke:#4A90E2,stroke-width:2px;
+    classDef process fill:#ffffff,stroke:#4A90E2,stroke-width:2px;
+    classDef updated fill:#fff3e6,stroke:#F5A623,stroke-width:2px;
 
-    Upload([upload_file: DCM / PNG / JPG]) --> Router{FastAPI Router}
+    Start([Upload: DCM / PNG / JPG]):::startEnd --> Router{FastAPI Router}:::router
     
-    %% Preview Pipeline
-    Router -->|POST /api/preview| Preview[pydicom.dcmread]
-    Preview --> PreviewNorm[cv2.normalize]
-    PreviewNorm --> PreviewEncode[cv2.imencode .png]
-    PreviewEncode --> Out1([Return Preview PNG])
-    
-    %% Preprocessing Pipeline
-    Router -->|POST /api/preprocess| Main[run_lung_ai]
-    Main --> Decode[Image Decoding & Normalization]
-    Decode --> Tensor[Tensor Transformation: 512x512]
-    Tensor --> SegModel[seg_model: PSPNet]:::AI
-    SegModel --> Mask[Mask Refinement: m_clean]
-    Mask -->|cv2.findContours & dilate| BoneModel[bone_model: Lightweight U-Net]:::AI
-    BoneModel -->|lumora_bone_model.pth| Blend[Alpha Blending]
-    Blend -->|cv2.GaussianBlur & addWeighted| Match[match_mean_std]
-    Match --> Cleanup[Resource Cleanup: cuda.empty_cache]
-    Cleanup --> Encode[cv2.imencode .png]
-    Encode --> Out2([Return Processed PNG])
+    %% Preview
+    Router -->|POST /api/preview| Prev1[pydicom.dcmread]:::process
+    Prev1 --> Prev2[cv2.imencode .png]:::process
+    Prev2 --> PrevEnd([Return Preview PNG]):::startEnd
 
-    class Upload,Out1,Out2 InOut;
-    class Router Router;
-    class Main,Decode,Tensor,Mask,Blend,Match,Cleanup,Encode,Preview,PreviewNorm,PreviewEncode CoreFunc;
+    %% Preprocess
+    Router -->|POST /api/preprocess| Prep1[run_lung_ai]:::process
+    Prep1 --> Prep2[Tensor Transformation: 512x512]:::process
+    Prep2 --> Prep3[seg_model: PSPNet]:::process
+    Prep3 --> Prep4[Mask Refinement: m_clean]:::process
+    
+    Prep4 -->|cv2.findContours & dilate| Prep5[bone_model: ResNet_BS 512x512]:::updated
+    Prep5 -->|lumora_bone_model_512_finetuned.pth| Prep6[CLAHE Contrast Optimization]:::updated
+    Prep6 -->|cv2.createCLAHE| Prep7[100% Alpha Blending]:::updated
+    Prep7 -->|cv2.GaussianBlur| Prep8[Resource Cleanup: cuda.empty_cache]:::process
+    
+    Prep8 --> Prep9[cv2.imencode .png]:::process
+    Prep9 --> PrepEnd([Return Processed PNG]):::startEnd
