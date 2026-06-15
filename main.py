@@ -4,87 +4,28 @@ from fastapi.responses import Response
 import cv2
 import numpy as np
 import torch
-import torch.nn as nn
-import torchxrayvision as xrv
 import pydicom
 import io
 import os
 import gc
 import traceback
+from RajaramanModel import ResNet_BS
 
 # ==========================================
-# 1. 오픈소스 뼈 억제 AI 아키텍처 (ResNet Generator)
-# (이 부분은 다운로드한 오픈소스의 모델 클래스 코드로 완벽히 동일하게 맞춰야 합니다)
-# 아래는 가장 범용적으로 쓰이는 9-block ResNet 기반 모델의 표준 예시입니다.
+# 🚨 [가장 중요] 깃허브 모델 아키텍처 불러오기
 # ==========================================
-class ResnetBlock(nn.Module):
-    def __init__(self, dim):
-        super(ResnetBlock, self).__init__()
-        self.conv_block = nn.Sequential(
-            nn.ReflectionPad2d(1),
-            nn.Conv2d(dim, dim, kernel_size=3, padding=0, bias=True),
-            nn.InstanceNorm2d(dim),
-            nn.ReLU(True),
-            nn.ReflectionPad2d(1),
-            nn.Conv2d(dim, dim, kernel_size=3, padding=0, bias=True),
-            nn.InstanceNorm2d(dim)
-        )
+# RajaramanModel.py 파일을 열어보시면 `class 클래스이름(nn.Module):` 형태로 적혀있을 것입니다.
+# 그 클래스 이름을 아래에 정확히 적어주세요. (예: ResNet_BS, ResnetGenerator 등)
+try:
+    from RajaramanModel import ResNet  # 👈 'ResNet' 부분을 실제 클래스 이름으로 바꿔주세요!
+except ImportError:
+    print("⚠️ RajaramanModel.py 파일이 없거나 클래스 이름을 찾을 수 없습니다.")
 
-    def forward(self, x):
-        return x + self.conv_block(x)
-
-class OpenSourceBoneSuppressionNet(nn.Module):
-    def __init__(self, input_nc=1, output_nc=1, ngf=64, n_blocks=9):
-        super(OpenSourceBoneSuppressionNet, self).__init__()
-        
-        # 1. 초기 컨볼루션
-        model = [
-            nn.ReflectionPad2d(3),
-            nn.Conv2d(input_nc, ngf, kernel_size=7, padding=0, bias=True),
-            nn.InstanceNorm2d(ngf),
-            nn.ReLU(True)
-        ]
-        
-        # 2. 다운샘플링 (인코더)
-        n_downsampling = 2
-        for i in range(n_downsampling):
-            mult = 2 ** i
-            model += [
-                nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=2, padding=1, bias=True),
-                nn.InstanceNorm2d(ngf * mult * 2),
-                nn.ReLU(True)
-            ]
-            
-        # 3. ResNet 블록 (병목 구간)
-        mult = 2 ** n_downsampling
-        for i in range(n_blocks):
-            model += [ResnetBlock(ngf * mult)]
-            
-        # 4. 업샘플링 (디코더)
-        for i in range(n_downsampling):
-            mult = 2 ** (n_downsampling - i)
-            model += [
-                nn.ConvTranspose2d(ngf * mult, int(ngf * mult / 2), kernel_size=3, stride=2, padding=1, output_padding=1, bias=True),
-                nn.InstanceNorm2d(int(ngf * mult / 2)),
-                nn.ReLU(True)
-            ]
-            
-        # 5. 최종 출력
-        model += [
-            nn.ReflectionPad2d(3),
-            nn.Conv2d(ngf, output_nc, kernel_size=7, padding=0),
-            nn.Tanh() # 뼈 억제 오픈소스는 주로 -1 ~ 1 사이로 출력합니다.
-        ]
-        
-        self.model = nn.Sequential(*model)
-
-    def forward(self, x):
-        return self.model(x)
 
 # ==========================================
-# 2. FastAPI 앱 및 AI 모델 로드
+# 1. FastAPI 앱 및 파이토치 모델 초기화
 # ==========================================
-app = FastAPI(title="Lung-Ai Preprocessing API (OpenSource BS)")
+app = FastAPI(title="Lung-Ai Preprocessing API (PyTorch OpenSource)")
 
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
@@ -93,29 +34,35 @@ app.add_middleware(
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"🔥 [Lung-Ai Server] 모델을 {device}에 로드하는 중...")
 
-# (선택) 폐 영역 분할용 모델
-seg_model = xrv.baseline_models.chestx_det.PSPNet().to(device).eval()
-
-# 💡 최신 오픈소스 모델 로드
-bone_model = OpenSourceBoneSuppressionNet(input_nc=1, output_nc=1).to(device)
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# 💡 다운로드한 오픈소스 가중치 파일 이름
-bone_model_path = os.path.join(BASE_DIR, "resnet_bs_model.pth") 
+# 💡 다운받으신 .tar 가중치 파일
+bone_model_path = os.path.join(BASE_DIR, "trained_network_nonEqualised.tar")
 
-if os.path.exists(bone_model_path):
-    try:
-        bone_model.load_state_dict(torch.load(bone_model_path, map_location=device))
-        print("✅ [Lung-Ai Server] 글로벌 오픈소스 뼈 제거 AI 장착 완료!")
-    except Exception as e:
-        print(f"⚠️ [에러] 가중치 구조가 맞지 않습니다. 다운로드한 오픈소스의 원본 파이썬 클래스 구조로 1번 항목을 교체해주세요.\n{e}")
-else:
-    print(f"⚠️ [경고] {bone_model_path} 파일이 없습니다. GitHub에서 가중치를 다운받아 넣어주세요!")
 
-bone_model.eval()
+try:
+    # 1. 모델 뼈대 생성 (클래스 이름과 필수 이미지 사이즈 파라미터 추가!)
+    bone_model = ResNet_BS(input_array_shape=(1, 256, 256)).to(device)
+    
+    # 2. .tar 가중치 보따리 읽어오기
+    checkpoint = torch.load(bone_model_path, map_location=device)
+    
+    # 3. 보따리 구조에 맞게 가중치 덮어씌우기 (에러 방지용 다중 조건문)
+    if 'state_dict' in checkpoint:
+        bone_model.load_state_dict(checkpoint['state_dict'])
+    elif 'model_state_dict' in checkpoint:
+        bone_model.load_state_dict(checkpoint['model_state_dict'])
+    else:
+        bone_model.load_state_dict(checkpoint) # 가중치만 덩그러니 있을 경우
+        
+    bone_model.eval()
+    print("✅ [Lung-Ai Server] 글로벌 파이토치 뼈 제거 AI 장착 완벽 성공!")
+    
+except Exception as e:
+    print(f"⚠️ [치명적 에러] 가중치 로드 실패! RajaramanModel.py 내부의 클래스명을 확인해주세요.\n{e}")
+    bone_model = None
 
 # ==========================================
-# 3. 통합 전처리 엔드포인트
+# 2. 통합 전처리 AI 엔드포인트
 # ==========================================
 @app.post("/api/preprocess")
 async def run_lung_ai(file: UploadFile = File(...)):
@@ -125,48 +72,108 @@ async def run_lung_ai(file: UploadFile = File(...)):
         print(f"\n--- 🚀 [새로운 요청 수신] 파일명: {filename} ---")
         contents = await file.read()
         
-        # [STEP 1] 디코딩
-        if filename.lower().endswith('.dcm'):
-            dicom_data = pydicom.dcmread(io.BytesIO(contents))
-            pixel_array = dicom_data.pixel_array
-            raw_img = cv2.normalize(pixel_array, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-            if len(raw_img.shape) == 3:
-                raw_img = cv2.cvtColor(raw_img, cv2.COLOR_BGR2GRAY)
-        else:
-            nparr = np.frombuffer(contents, np.uint8)
-            raw_img = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
-
-        # [STEP 2] 모델 입력용 텐서 변환
-        img_512 = cv2.resize(raw_img, (512, 512))
+        # [STEP 1] 디코딩 및 흉부 X-ray(CXR) 여부 엄격 검증
+        dicom_data = pydicom.dcmread(io.BytesIO(contents))
         
-        # 💡 Tanh() 출력을 가지는 모델을 위한 -1 ~ 1 정규화
-        img_normalized = (img_512.astype(np.float32) / 127.5) - 1.0 
+        # 🚨 [핵심 추가] DICOM 메타데이터 추출
+        # 1. Modality: 촬영 장비 종류 (CR: 컴퓨터 방사선, DX: 디지털 방사선 등)
+        modality = getattr(dicom_data, 'Modality', '').upper()
+        
+        # 2. BodyPartExamined: 촬영 부위 (CHEST, KNEE, HEAD 등)
+        body_part = getattr(dicom_data, 'BodyPartExamined', '').upper()
+        
+        print(f"👉 [데이터 확인] 장비: {modality}, 부위: {body_part}")
+        
+        # 🛑 검증 1: X-ray 촬영(CR, DX, XR)이 아닌 경우 (예: CT, MR, US 등 거부)
+        if modality not in ['CR', 'DX', 'XR']:
+            print(f"⚠️ [처리 중단] X-ray 영상이 아닙니다. (입력된 장비: {modality})")
+            return Response(status_code=400, content=f"Only X-ray images are supported. Detected Modality: {modality}")
+            
+        # 🛑 검증 2: 촬영 부위가 '가슴(CHEST)'이 아닌 경우 (단, 태그가 아예 누락된 빈 값인 경우는 통과시킴)
+        if body_part and 'CHEST' not in body_part and 'LUNG' not in body_part:
+            print(f"⚠️ [처리 중단] 흉부(Chest) 영상이 아닙니다. (입력된 부위: {body_part})")
+            return Response(status_code=400, content=f"Only Chest X-rays are supported. Detected Body Part: {body_part}")
+
+        # 검증을 통과한 순수 흉부 X-ray만 픽셀 데이터 추출 진행
+        pixel_array = dicom_data.pixel_array
+        raw_img = cv2.normalize(pixel_array, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        
+        if len(raw_img.shape) == 3:
+            raw_img = cv2.cvtColor(raw_img, cv2.COLOR_BGR2GRAY)
+        # [STEP 2] 텐서 변환 (모델 입력용)
+        # 해당 오픈소스가 통상적으로 요구하는 256x256 크기로 리사이즈
+        img_resized = cv2.resize(raw_img, (256, 256))
+        
+        # 0 ~ 1 사이로 정규화 후 PyTorch 텐서로 변환 [Batch, Channel, H, W]
+        img_normalized = img_resized.astype(np.float32) / 255.0
         bone_input = torch.from_numpy(img_normalized).unsqueeze(0).unsqueeze(0).to(device)
 
-        # [STEP 3] 오픈소스 AI 모델 추론
-        print("[3/5] 오픈소스 AI 모델 연산 진행 중...")
+        # [STEP 3] AI 모델 추론 (진짜 뼈 지우기)
+        print("[3/5] 파이토치 뼈 억제 AI 연산 진행 중...")
         with torch.no_grad():
-            # 뼈 억제 수행
-            bone_out_tensor = bone_model(bone_input)
-            
-            # -1 ~ 1 결과를 다시 0 ~ 255 이미지로 복원
-            bone_out_np = bone_out_tensor.cpu().numpy()[0, 0, :, :]
-            bone_out_np = ((bone_out_np + 1.0) * 127.5).clip(0, 255).astype(np.uint8)
+            if bone_model is not None:
+                bone_out_tensor = bone_model(bone_input)
+                
+                # 텐서를 넘파이 배열로 변환
+                bone_out_np = bone_out_tensor.cpu().numpy()[0, 0, :, :]
+                
+                # 결과값이 -1~1 (Tanh) 인지, 0~1 (Sigmoid) 인지 자동 대응하여 0~255로 복원
+                if bone_out_np.min() < 0:
+                    bone_out_np = ((bone_out_np + 1.0) * 127.5).clip(0, 255).astype(np.uint8)
+                else:
+                    bone_out_np = (bone_out_np * 255.0).clip(0, 255).astype(np.uint8)
+            else:
+                raise ValueError("AI 모델이 정상적으로 로드되지 않았습니다.")
 
-        # [STEP 4] 메모리 정리 및 전송
-        print("[4/5] 처리 완료! 프론트엔드로 PNG 변환 전송...")
+       # [STEP 4] 후처리 및 이미지 전송
+        print("[4/5] 처리 완료! 고화질 복원 및 명암 조절(CLAHE) 진행...")
+        
+        # 1. 프론트엔드 출력을 위해 다시 512x512 해상도로 깨끗하게 키워줍니다.
+        final_processed_img = cv2.resize(bone_out_np, (512, 512), interpolation=cv2.INTER_CUBIC)
+
+        # 💡 2. [핵심 추가] 기존에 사용했던 CLAHE 명암비 극대화 로직 적용
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        final_processed_img = clahe.apply(final_processed_img)
+
         del bone_input, bone_out_tensor
         torch.cuda.empty_cache()
         gc.collect()
 
-        _, encoded_img = cv2.imencode('.png', bone_out_np)
+        _, encoded_img = cv2.imencode('.png', final_processed_img)
         return Response(content=encoded_img.tobytes(), media_type="image/png")
-
+    
     except Exception as e:
         print(f"\n❌ [에러 발생] {filename} 처리 실패\n")
         traceback.print_exc()
         return Response(status_code=500, content=f"Server Error: {str(e)}")
 
+# ==========================================
+# 3. DICOM 미리보기 전용 API
+# ==========================================
+@app.post("/api/preview")
+async def get_dicom_preview(file: UploadFile = File(...)):
+    if not file.filename.lower().endswith('.dcm'):
+        return Response(status_code=400, content="Only DICOM files need preview.")
+    
+    contents = await file.read()
+    try:
+        dicom_data = pydicom.dcmread(io.BytesIO(contents))
+        pixel_array = dicom_data.pixel_array
+        raw_img = cv2.normalize(pixel_array, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        
+        if len(raw_img.shape) == 3:
+            raw_img = cv2.cvtColor(raw_img, cv2.COLOR_BGR2GRAY)
+            
+        _, encoded_img = cv2.imencode('.png', raw_img)
+        return Response(content=encoded_img.tobytes(), media_type="image/png")
+        
+    except Exception as e:
+        return Response(status_code=500, content=f"Preview Error: {str(e)}")
+
+
+# ==========================================
+# 4. 재생 버튼(▶) 클릭 시 서버 자동 실행
+# ==========================================
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
